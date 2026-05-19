@@ -1,0 +1,333 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PluginDialog</class>
+ <widget class="QDialog" name="PluginDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Plugin d'analyse</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QGroupBox" name="groupWorkflow">
+     <property name="title">
+      <string>Workflow d'analyse</string>
+     </property>
+     <layout class="QVBoxLayout" name="layoutWorkflow">
+      <item>
+       <layout class="QHBoxLayout" name="layoutSteps">
+        <item>
+         <widget class="QPushButton" name="stepProjet">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">background-color:#1f3c88; color:white; font-weight:bold; border-radius:8px; padding:5px;</string>
+          </property>
+          <property name="text">
+           <string>1. Projet</string>
+          </property>
+         </widget>
+        </item>
+        
+        <item>
+         <widget class="QPushButton" name="stepCouches">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>3. Couches</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="stepDerogation">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>4. Dérogation</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="stepResults">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>5. Résultats</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="stepExport">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>6. Export</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QStackedWidget" name="stackedWorkflow">
+        <widget class="QWidget" name="pageProjet">
+         <layout class="QHBoxLayout" name="layoutProjetPage">
+          <item>
+           <widget class="QGroupBox" name="groupProjetWizard">
+            <property name="title">
+            <string>Étape 1 — Informations projet</string>
+            </property>
+            <layout class="QFormLayout" name="formProjetWizard">
+            <item row="0" column="0">
+            <widget class="QLabel" name="labelNomProjetWizard">
+                <property name="text">
+                <string>Nom projet :</string>
+                </property>
+            </widget>
+            </item>
+            <item row="0" column="1">
+            <widget class="QLineEdit" name="lineProjetWizard"/>
+            </item>
+            <item row="1" column="0">
+            <widget class="QLabel" name="labelTypeProjetWizard">
+                <property name="text">
+                <string>Type :</string>
+                </property>
+            </widget>
+            </item>
+            <item row="1" column="1">
+            <layout class="QHBoxLayout" name="layoutTypeProjetWizard">
+                <item>
+                <widget class="QRadioButton" name="radioPointWizard">
+                <property name="text">
+                <string>Point X/Y</string>
+                </property>
+                </widget>
+                </item>
+                <item>
+                <widget class="QRadioButton" name="radioShpWizard">
+                <property name="text">
+                <string>Import SHP</string>
+                </property>
+                </widget>
+                </item>
+            </layout>
+            </item>
+            <item row="2" column="0">
+            <widget class="QLabel" name="labelCoordWizard">
+                <property name="text">
+                <string>Coordonnées :</string>
+                </property>
+            </widget>
+            </item>
+            <item row="2" column="1">
+            <layout class="QHBoxLayout" name="layoutCoordWizard">
+                <item>
+                <widget class="QLabel" name="labelXWizard">
+                <property name="text">
+                <string>X :</string>
+                </property>
+                </widget>
+                </item>
+                <item>
+                <widget class="QLineEdit" name="lineXWizard"/>
+                </item>
+                <item>
+                <widget class="QLabel" name="labelYWizard">
+                <property name="text">
+                <string>Y :</string>
+                </property>
+                </widget>
+                </item>
+                <item>
+                <widget class="QLineEdit" name="lineYWizard"/>
+                </item>
+            </layout>
+            </item>
+            <item row="3" column="1">
+            <widget class="QPushButton" name="btnImportShp">
+                <property name="text">
+                <string>Importer SHP</string>
+                </property>
+            </widget>
+            </item>
+            <item row="4" column="1">
+            <widget class="QPushButton" name="btnAfficherProjet">
+                <property name="text">
+                <string>Afficher sur la carte</string>
+                </property>
+            </widget>
+            </item>
+            
+            <!-- AJOUT DU BUFFER - Ligne 5 -->
+            <item row="5" column="0">
+            <widget class="QLabel" name="labelBuffer">
+                <property name="text">
+                <string>Buffer :</string>
+                </property>
+                <property name="font">
+                <font>
+                <weight>75</weight>
+                <bold>true</bold>
+                </font>
+                </property>
+            </widget>
+            </item>
+            <item row="5" column="1">
+            <layout class="QHBoxLayout" name="layoutBuffer">
+                <item>
+                <widget class="QDoubleSpinBox" name="spinBufferValue">
+                <property name="minimum">
+                <double>0</double>
+                </property>
+                <property name="maximum">
+                <double>100000</double>
+                </property>
+                <property name="value">
+                <double>100</double>
+                </property>
+                <property name="decimals">
+                <number>2</number>
+                </property>
+                <property name="suffix">
+                <string/>
+                </property>
+                <property name="minimumSize">
+                <size>
+                    <width>150</width>
+                    <height>0</height>
+                </size>
+                </property>
+                </widget>
+                </item>
+                <item>
+                <widget class="QComboBox" name="comboBufferUnit">
+                <property name="minimumSize">
+                <size>
+                    <width>80</width>
+                    <height>0</height>
+                </size>
+                </property>
+                <item>
+                <property name="text">
+                    <string>mètres</string>
+                </property>
+                </item>
+                <item>
+                <property name="text">
+                    <string>km</string>
+                </property>
+                </item>
+                </widget>
+                </item>
+            </layout>
+            </item>
+            
+            </layout>
+            </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="groupMapWizard">
+            <property name="title">
+             <string>Aperçu cartographique</string>
+            </property>
+            <layout class="QVBoxLayout" name="layoutMapWizard">
+             <item>
+              <widget class="QWidget" name="mapCanvasWidget" native="true">
+               <property name="minimumSize">
+                <size>
+                 <width>450</width>
+                 <height>350</height>
+                </size>
+               </property>
+               <property name="styleSheet">
+                <string notr="true">background-color:#dce8d5; border:1px solid #cccccc; border-radius:10px;</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="layoutNavigation">
+        <item>
+         <spacer name="horizontalSpacerNavigation">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>40</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btnPrevious">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>◀ Précédent</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btnNext">
+          <property name="minimumSize">
+           <size>
+            <width>120</width>
+            <height>40</height>
+           </size>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">background-color:#1f3c88; color:white; font-weight:bold; border-radius:8px;</string>
+          </property>
+          <property name="text">
+           <string>Suivant ▶</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>InterfaceB</class>
+
+ <widget class="QDialog" name="InterfaceB">
+
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>400</width>
+    <height>250</height>
+   </rect>
+  </property>
+
+  <property name="windowTitle">
+   <string>Interface B</string>
+  </property>
+
+  <layout class="QVBoxLayout" name="verticalLayout">
+
+   <!-- LABEL -->
+   <item>
+    <widget class="QLabel" name="lblTitre">
+
+     <property name="text">
+      <string>Bienvenue dans Interface B</string>
+     </property>
+
+    </widget>
+   </item>
+
+   <!-- LINE EDIT -->
+   <item>
+    <widget class="QLineEdit" name="txtNom">
+
+     <property name="placeholderText">
+      <string>Entrer votre nom</string>
+     </property>
+
+    </widget>
+   </item>
+
+   <!-- BUTTON -->
+   <item>
+    <widget class="QPushButton" name="btnValider">
+
+     <property name="text">
+      <string>Valider</string>
+     </property>
+
+    </widget>
+   </item>
+
+  </layout>
+
+ </widget>
+
+ <resources/>
+ <connections/>
+
+</ui>
