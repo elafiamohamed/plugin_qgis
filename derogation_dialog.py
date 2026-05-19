@@ -30,6 +30,7 @@ FORM_CLASS, _ = uic.loadUiType(
 
 
 class DerogationDialog(QtWidgets.QDialog, FORM_CLASS):
+    #branch
 
     def __init__(self, parent=None):
 
