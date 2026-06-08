@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>900</width>
-    <height>700</height>
+    <width>903</width>
+    <height>739</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -123,25 +123,16 @@
                </property>
               </widget>
              </item>
-             <item row="4" column="1">
-              <widget class="QPushButton" name="btnAfficherProjet">
-               <property name="text">
-                <string>Afficher projet + buffer</string>
-               </property>
-              </widget>
-             </item>
-
-             <!-- BUFFER - Ligne 5 -->
              <item row="5" column="0">
               <widget class="QLabel" name="labelBuffer">
-               <property name="text">
-                <string>Buffer :</string>
-               </property>
                <property name="font">
                 <font>
                  <weight>75</weight>
                  <bold>true</bold>
                 </font>
+               </property>
+               <property name="text">
+                <string>Buffer :</string>
                </property>
               </widget>
              </item>
@@ -149,26 +140,26 @@
               <layout class="QHBoxLayout" name="layoutBuffer">
                <item>
                 <widget class="QDoubleSpinBox" name="spinBufferValue">
-                 <property name="minimum">
-                  <double>0</double>
-                 </property>
-                 <property name="maximum">
-                  <double>100000</double>
-                 </property>
-                 <property name="value">
-                  <double>100</double>
-                 </property>
-                 <property name="decimals">
-                  <number>2</number>
-                 </property>
-                 <property name="suffix">
-                  <string/>
-                 </property>
                  <property name="minimumSize">
                   <size>
                    <width>150</width>
                    <height>0</height>
                   </size>
+                 </property>
+                 <property name="suffix">
+                  <string/>
+                 </property>
+                 <property name="decimals">
+                  <number>2</number>
+                 </property>
+                 <property name="minimum">
+                  <double>0.000000000000000</double>
+                 </property>
+                 <property name="maximum">
+                  <double>100000.000000000000000</double>
+                 </property>
+                 <property name="value">
+                  <double>100.000000000000000</double>
                  </property>
                 </widget>
                </item>
@@ -194,8 +185,6 @@
                </item>
               </layout>
              </item>
-
-             <!-- BOUTON CALCULER INTERSECTIONS - Ligne 6 -->
              <item row="6" column="0" colspan="2">
               <layout class="QHBoxLayout" name="layoutCalculIntersections">
                <item>
@@ -242,6 +231,13 @@
                </item>
               </layout>
              </item>
+             <item row="4" column="1">
+              <widget class="QPushButton" name="btnAfficherProjet">
+               <property name="text">
+                <string>Afficher projet + buffer</string>
+               </property>
+              </widget>
+             </item>
             </layout>
            </widget>
           </item>
@@ -271,15 +267,13 @@
         </widget>
        </widget>
       </item>
-
-      <!-- ZONE DE RÉSULTATS -->
       <item>
        <widget class="QGroupBox" name="groupResults">
-        <property name="title">
-         <string>Résultats d'analyse</string>
-        </property>
         <property name="styleSheet">
          <string notr="true">QGroupBox { font-weight: bold; }</string>
+        </property>
+        <property name="title">
+         <string>Résultats d'analyse</string>
         </property>
         <layout class="QVBoxLayout" name="layoutResults">
          <item>
@@ -298,7 +292,6 @@
         </layout>
        </widget>
       </item>
-
       <item>
        <layout class="QHBoxLayout" name="layoutNavigation">
         <item>
@@ -315,7 +308,7 @@
          </spacer>
         </item>
         <item>
-         <widget class="QPushButton" name="btnNext">
+         <widget class="QPushButton" name="btnExport">
           <property name="minimumSize">
            <size>
             <width>120</width>
