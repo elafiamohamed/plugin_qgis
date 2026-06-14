@@ -1,6 +1,8 @@
 """imgsat_dialog.py
 Plugin ImgSat — Analyse semi-automatique d'images satellitaires pour QGIS 3.x
-v2 : loaders sur tous les boutons d'action, recherche Copernicus non-bloquante
+v4 : onglet Classification fusionné en un seul panneau (classes + run + validation),
+     loader sur le bouton Lancer la classification, suppression des sous-onglets
+     ① Entraînement / ② Classification / ③ Validation.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from qgis.core import (
     QgsRasterFileWriter,
     QgsRasterPipe,
     QgsRaster,
+    QgsRasterShader
 )
 
 try:
@@ -375,8 +378,7 @@ class CopernicusAuthWorker(QtCore.QThread):
 
 
 class CopernicusSearchWorker(QtCore.QThread):
-    """Recherche Copernicus dans un thread pour ne pas bloquer l'UI."""
-    success = QtCore.pyqtSignal(list)   # liste de produits
+    success = QtCore.pyqtSignal(list)
     failure = QtCore.pyqtSignal(str)
 
     def __init__(self, url, token=""):
@@ -390,32 +392,16 @@ class CopernicusSearchWorker(QtCore.QThread):
             if self.token:
                 headers["Authorization"] = f"Bearer {self.token}"
             req = Request(self.url, headers=headers)
-            
-            print("--- DÉBUT RECHERCHE COPERNICUS ---")
-            print(f"URL appelée : {self.url}")
-            
             with urlopen(req, timeout=30) as resp:
                 raw_data = resp.read()
-                
-            # On affiche les 1000 premiers caractères de la réponse pour voir la tronche du JSON
-            print(f"Réponse brute de l'API : {raw_data[:1000]}") 
-            
             data = json.loads(raw_data)
             products = data.get("value", [])
-            
-            print(f"Nombre de produits trouvés : {len(products)}")
-            print("----------------------------------")
-            
             self.success.emit(products)
-            
         except Exception as e:
-            # Si jamais il y a une erreur réseau ou API (ex: token expiré)
-            print(f"ERREUR DANS LE WORKER COPERNICUS : {e}")
             self.failure.emit(str(e))
 
 
 class GenericWorker(QtCore.QThread):
-    """Worker générique pour toute opération bloquante avec callback."""
     success = QtCore.pyqtSignal(object)
     failure = QtCore.pyqtSignal(str)
 
@@ -495,7 +481,7 @@ class SchedulerWorker(QtCore.QThread):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LOADER SPINNER (animation dots)
+# LOADER SPINNER
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BtnLoader:
@@ -505,6 +491,11 @@ class BtnLoader:
         loader = BtnLoader(btn, label_ready="Rechercher", label_loading="Recherche…", style_ready=_BTN_PRIMARY)
         loader.start()   # désactive + anime
         loader.stop()    # restaure
+
+    flash(duration_ms) : démarre l'animation puis la stoppe automatiquement
+        après `duration_ms` millisecondes. Utile pour donner un feedback
+        visuel immédiat même quand l'action s'arrête tout de suite
+        (ex : erreur de validation avant tout traitement long).
     """
     SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -518,19 +509,33 @@ class BtnLoader:
         self._timer.setInterval(80)
         self._timer.timeout.connect(self._tick)
         self._frame         = 0
+        self._flash_timer   = None
 
     def start(self):
+        if self._flash_timer is not None:
+            self._flash_timer.stop()
+            self._flash_timer = None
         self._btn.setEnabled(False)
         self._btn.setStyleSheet(_BTN_LOADING)
         self._frame = 0
         self._tick()
         self._timer.start()
+        QtWidgets.QApplication.processEvents()
 
     def stop(self):
         self._timer.stop()
         self._btn.setText(self._label_ready)
         self._btn.setStyleSheet(self._style_ready)
         self._btn.setEnabled(True)
+
+    def flash(self, duration_ms=350):
+        """Affiche brièvement l'état loading puis revient à l'état normal."""
+        self.start()
+        if self._flash_timer is None:
+            self._flash_timer = QtCore.QTimer()
+            self._flash_timer.setSingleShot(True)
+            self._flash_timer.timeout.connect(self.stop)
+        self._flash_timer.start(duration_ms)
 
     def _tick(self):
         sp = self.SPINNER[self._frame % len(self.SPINNER)]
@@ -560,13 +565,11 @@ class ImgSatDialog(QtWidgets.QDialog):
         self._scheduler        = None
         self._stat_data        = []
 
-        # Workers actifs (évite le GC)
         self._cop_auth_worker   = None
         self._cop_search_worker = None
         self._usgs_auth_worker  = None
         self._generic_workers   = []
 
-        # Loaders (créés après _build_ui)
         self._loaders = {}
 
         self._status_lbl = QtWidgets.QLabel("")
@@ -643,24 +646,24 @@ class ImgSatDialog(QtWidgets.QDialog):
     def _init_loaders(self):
         """Crée les BtnLoader pour chaque bouton d'action après _build_ui."""
         self._loaders = {
-            "cop_auth":   BtnLoader(self._cop_btn_auth,   "Connexion OAuth2",          "Connexion…",     _BTN_PRIMARY),
-            "cop_search": BtnLoader(self._cop_btn_search, "🔍  Rechercher des produits","Recherche…",     _BTN_PRIMARY),
-            "cop_dl":     BtnLoader(self._cop_btn_dl,     "⬇  Télécharger la sélection","Téléchargement…",_BTN_SUCCESS),
-            "usgs_auth":  BtnLoader(self._usgs_btn_auth,  "Connexion M2M API",          "Connexion…",     _BTN_PRIMARY),
-            "usgs_search":BtnLoader(self._usgs_btn_search,"🔍  Rechercher des scènes",  "Recherche…",     _BTN_PRIMARY),
-            "usgs_dl":    BtnLoader(self._usgs_btn_dl,    "⬇  Télécharger la sélection","Téléchargement…",_BTN_SUCCESS),
-            "dos1":       BtnLoader(self._btn_dos1,       "Appliquer DOS1",             "Traitement…",    _BTN_PRIMARY),
-            "clip":       BtnLoader(self._btn_clip,       "Découper le raster",         "Découpe…",       _BTN_PRIMARY),
-            "reproj":     BtnLoader(self._btn_reproj,     "Reprojeter",                 "Reprojection…",  _BTN_PRIMARY),
-            "clf_add":    BtnLoader(self._btn_add_class,  "＋  Ajouter la classe",       "Extraction…",    _BTN_SUCCESS),
-            "clf_run":    BtnLoader(self._btn_clf_run,    "▶  Lancer la classification", "Calcul…",        _BTN_SUCCESS),
-            "clf_matrix": BtnLoader(self._btn_conf_mat,  "Calculer la matrice de confusion","Calcul…",   _BTN_PRIMARY),
-            "stats":      BtnLoader(self._btn_stats,      "Calculer",                   "Calcul…",        _BTN_PRIMARY),
-            "calc":       BtnLoader(self._btn_calc,       "▶  Calculer",                "Calcul…",        _BTN_SUCCESS),
-            "exp_raster": BtnLoader(self._btn_exp_raster, "⬇  Exporter le raster",      "Export…",        _BTN_PRIMARY),
-            "exp_csv":    BtnLoader(self._btn_exp_csv,    "Exporter les statistiques CSV","Export…",       _BTN_PRIMARY),
-            "exp_map":    BtnLoader(self._btn_exp_map,    "📷  Capturer la carte",       "Capture…",       _BTN_PRIMARY),
-            "report":     BtnLoader(self._btn_report,     "📄  Générer le rapport",      "Génération…",    _BTN_SUCCESS),
+            "cop_auth":   BtnLoader(self._cop_btn_auth,   "Connexion OAuth2",           "Connexion…",      _BTN_PRIMARY),
+            "cop_search": BtnLoader(self._cop_btn_search, "🔍  Rechercher des produits", "Recherche…",      _BTN_PRIMARY),
+            "cop_dl":     BtnLoader(self._cop_btn_dl,     "⬇  Télécharger la sélection","Téléchargement…", _BTN_SUCCESS),
+            "usgs_auth":  BtnLoader(self._usgs_btn_auth,  "Connexion M2M API",           "Connexion…",      _BTN_PRIMARY),
+            "usgs_search":BtnLoader(self._usgs_btn_search,"🔍  Rechercher des scènes",   "Recherche…",      _BTN_PRIMARY),
+            "usgs_dl":    BtnLoader(self._usgs_btn_dl,    "⬇  Télécharger la sélection","Téléchargement…", _BTN_SUCCESS),
+            "dos1":       BtnLoader(self._btn_dos1,       "Appliquer DOS1",              "Traitement…",     _BTN_PRIMARY),
+            "clip":       BtnLoader(self._btn_clip,       "Découper le raster",          "Découpe…",        _BTN_PRIMARY),
+            "reproj":     BtnLoader(self._btn_reproj,     "Reprojeter",                  "Reprojection…",   _BTN_PRIMARY),
+            "clf_add":    BtnLoader(self._btn_add_class,  "＋  Ajouter la classe",        "Extraction…",     _BTN_SUCCESS),
+            "clf_run":    BtnLoader(self._btn_clf_run,    "▶  Lancer la classification",  "Calcul…",         _BTN_SUCCESS),
+            "clf_matrix": BtnLoader(self._btn_conf_mat,  "Calculer la matrice de confusion", "Calcul…",     _BTN_PRIMARY),
+            "stats":      BtnLoader(self._btn_stats,      "Calculer",                    "Calcul…",         _BTN_PRIMARY),
+            "calc":       BtnLoader(self._btn_calc,       "▶  Calculer",                 "Calcul…",         _BTN_SUCCESS),
+            "exp_raster": BtnLoader(self._btn_exp_raster, "⬇  Exporter le raster",       "Export…",         _BTN_PRIMARY),
+            "exp_csv":    BtnLoader(self._btn_exp_csv,    "Exporter les statistiques CSV","Export…",        _BTN_PRIMARY),
+            "exp_map":    BtnLoader(self._btn_exp_map,    "📷  Capturer la carte",        "Capture…",        _BTN_PRIMARY),
+            "report":     BtnLoader(self._btn_report,     "📄  Générer le rapport",       "Génération…",     _BTN_SUCCESS),
         }
 
     # ═════════════════════════════════════════════════════════════════════
@@ -766,7 +769,6 @@ class ImgSatDialog(QtWidgets.QDialog):
         mid.addWidget(grp_b, 2)
         lay.addLayout(mid)
 
-        # Bouton recherche — référencé pour le loader
         self._cop_btn_search = QtWidgets.QPushButton("🔍  Rechercher des produits")
         self._cop_btn_search.setStyleSheet(_BTN_PRIMARY)
         self._cop_btn_search.setFixedHeight(34)
@@ -782,7 +784,6 @@ class ImgSatDialog(QtWidgets.QDialog):
         self._cop_table.setMaximumHeight(140)
         lay.addWidget(self._cop_table)
 
-        # Indication sélection
         self._cop_sel_lbl = QtWidgets.QLabel("Sélectionnez un produit dans la liste ci-dessus puis cliquez Télécharger.")
         self._cop_sel_lbl.setStyleSheet(f"font-size:10px;color:{_C_TEXT_HINT};font-style:italic;")
         lay.addWidget(self._cop_sel_lbl)
@@ -1426,142 +1427,162 @@ class ImgSatDialog(QtWidgets.QDialog):
         lay.addStretch()
         return w
 
+    # ═════════════════════════════════════════════════════════════════════
+    # ONGLET 3 > Classification — PANNEAU UNIQUE
+    # ═════════════════════════════════════════════════════════════════════
+
     def _trait_classification(self):
+        """
+        Panneau unique (scrollable) :
+          ① Couches source (raster + ROI)
+          ② Ajout / liste des classes d'entraînement
+          ③ Algorithme + sortie + bouton Lancer (avec loader)
+          ④ Validation optionnelle (matrice de confusion)
+        """
+        outer   = QtWidgets.QWidget()
+        o_lay   = QtWidgets.QVBoxLayout(outer)
+        o_lay.setContentsMargins(0, 0, 0, 0)
+        o_lay.setSpacing(0)
+
+        scroll  = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+
         w   = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(w)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
-        clf_sub = QtWidgets.QTabWidget()
-        clf_sub.setStyleSheet(f"QTabBar::tab{{min-width:50px;padding:5px 12px;font-size:11px;}}")
-        clf_sub.addTab(self._clf_train(), "① Entraînement")
-        clf_sub.addTab(self._clf_run(),   "② Classification")
-        clf_sub.addTab(self._clf_valid(), "③ Validation")
-        lay.addWidget(clf_sub)
-        return w
 
-    def _clf_train(self):
-        w   = QtWidgets.QWidget()
-        lay = QtWidgets.QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
-        row_l = QtWidgets.QHBoxLayout()
-        row_l.addWidget(_lbl("Couche raster :"))
+        lay.addWidget(_info(
+            "① Sélectionnez le raster et un ROI vecteur, nommez la classe et ajoutez-la.  "
+            "② Choisissez l'algorithme et le fichier de sortie, puis lancez.  "
+            "③ (Optionnel) Calculez la matrice de confusion avec une couche de vérité terrain."
+        ))
+
+        # ── ① Couches source ────────────────────────────────────────────
+        src_grp = _group("① Couches source")
+        src_lay = QtWidgets.QGridLayout(src_grp)
+        src_lay.setSpacing(6)
+
+        src_lay.addWidget(_lbl("Couche raster :"), 0, 0)
         self._clf_layer = QgsMapLayerComboBox()
         self._clf_layer.setFilters(QgsMapLayerProxyModel.RasterLayer)
-        row_l.addWidget(self._clf_layer)
-        lay.addLayout(row_l)
-        row_c = QtWidgets.QHBoxLayout()
-        row_c.addWidget(_lbl("Nom de classe :"))
+        src_lay.addWidget(self._clf_layer, 0, 1)
+
+        src_lay.addWidget(_lbl("Couche ROI (vecteur) :"), 1, 0)
+        self._clf_roi = QgsMapLayerComboBox()
+        self._clf_roi.setFilters(QgsMapLayerProxyModel.VectorLayer)
+        src_lay.addWidget(self._clf_roi, 1, 1)
+        lay.addWidget(src_grp)
+
+        # ── ② Classes d'entraînement ────────────────────────────────────
+        cls_grp = _group("② Classes d'entraînement")
+        cls_lay = QtWidgets.QVBoxLayout(cls_grp)
+        cls_lay.setSpacing(6)
+
+        row_n = QtWidgets.QHBoxLayout()
+        row_n.setSpacing(6)
+        row_n.addWidget(_lbl("Nom :"))
         self._class_name = QtWidgets.QLineEdit()
-        self._class_name.setPlaceholderText("ex. Forêt, Eau, Urbain…")
-        row_c.addWidget(self._class_name)
-        row_c.addWidget(_lbl("Couleur :"))
-        self._class_color_btn = QtWidgets.QPushButton()
-        self._class_color_btn.setFixedSize(28, 28)
-        self._class_color_btn._color = QtGui.QColor("#2f81f7")
-        self._class_color_btn.setStyleSheet("background:#2f81f7;border:none;border-radius:4px;")
-        self._class_color_btn.clicked.connect(self._pick_color)
-        row_c.addWidget(self._class_color_btn)
-        lay.addLayout(row_c)
-        row_v = QtWidgets.QHBoxLayout()
-        row_v.addWidget(_lbl("Polygones ROI :"))
-        self._roi_layer = QgsMapLayerComboBox()
-        self._roi_layer.setFilters(QgsMapLayerProxyModel.VectorLayer)
-        self._roi_layer.setAllowEmptyLayer(True)
-        row_v.addWidget(self._roi_layer)
-        lay.addLayout(row_v)
-        btns = QtWidgets.QHBoxLayout()
+        self._class_name.setPlaceholderText("ex: Eau, Forêt, Sol nu")
+        row_n.addWidget(self._class_name)
+
+        from qgis.gui import QgsColorButton
+        self._class_color_btn = QgsColorButton()
+        self._class_color_btn.setColor(QtGui.QColor("#2f81f7"))
+        self._class_color_btn.setFixedWidth(40)
+        row_n.addWidget(self._class_color_btn)
+
         self._btn_add_class = QtWidgets.QPushButton("＋  Ajouter la classe")
         self._btn_add_class.setStyleSheet(_BTN_SUCCESS)
+        self._btn_add_class.setFixedHeight(30)
         self._btn_add_class.clicked.connect(self._add_class)
-        b_clr = QtWidgets.QPushButton("Effacer tout")
-        b_clr.setStyleSheet(_BTN_GHOST)
-        b_clr.clicked.connect(self._clear_classes)
-        btns.addWidget(self._btn_add_class)
-        btns.addWidget(b_clr)
-        btns.addStretch()
-        lay.addLayout(btns)
-        self._class_list = QtWidgets.QListWidget()
-        self._class_list.setMaximumHeight(120)
-        lay.addWidget(self._class_list)
-        lay.addWidget(_warn("Les ROI doivent être des polygones homogènes et représentatifs."))
-        lay.addStretch()
-        return w
+        row_n.addWidget(self._btn_add_class)
+        cls_lay.addLayout(row_n)
 
-    def _clf_run(self):
-        w   = QtWidgets.QWidget()
-        lay = QtWidgets.QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
-        alg_row = QtWidgets.QHBoxLayout()
-        alg_row.addWidget(_lbl("Algorithme :"))
+        self._class_list = QtWidgets.QListWidget()
+        self._class_list.setMaximumHeight(100)
+        cls_lay.addWidget(self._class_list)
+
+        btn_clear = QtWidgets.QPushButton("✕  Effacer toutes les classes")
+        btn_clear.setStyleSheet(_BTN_GHOST)
+        btn_clear.setFixedHeight(24)
+        btn_clear.clicked.connect(self._clear_classes)
+        cls_lay.addWidget(btn_clear)
+        lay.addWidget(cls_grp)
+
+        # ── ③ Lancer la classification ──────────────────────────────────
+        run_grp = _group("③ Lancer la classification")
+        run_lay = QtWidgets.QGridLayout(run_grp)
+        run_lay.setSpacing(6)
+
+        run_lay.addWidget(_lbl("Algorithme :"), 0, 0)
         self._alg_combo = QtWidgets.QComboBox()
         self._alg_combo.addItems(["Minimum Distance (euclidien)", "Spectral Angle Mapper (SAM)"])
-        alg_row.addWidget(self._alg_combo)
-        lay.addLayout(alg_row)
-        out_row = QtWidgets.QHBoxLayout()
-        out_row.addWidget(_lbl("Sortie :"))
+        run_lay.addWidget(self._alg_combo, 0, 1, 1, 2)
+
+        run_lay.addWidget(_lbl("Sortie :"), 1, 0)
         self._clf_out = QtWidgets.QLineEdit()
         self._clf_out.setPlaceholderText("classification.tif")
-        btn = QtWidgets.QPushButton("…")
-        btn.setStyleSheet(_BTN_SMALL)
-        btn.setFixedWidth(30)
-        btn.clicked.connect(lambda: self._browse_output(self._clf_out))
-        out_row.addWidget(self._clf_out)
-        out_row.addWidget(btn)
-        lay.addLayout(out_row)
+        btn_out = QtWidgets.QPushButton("…")
+        btn_out.setStyleSheet(_BTN_SMALL)
+        btn_out.setFixedWidth(30)
+        btn_out.clicked.connect(lambda: self._browse_output(self._clf_out))
+        run_lay.addWidget(self._clf_out, 1, 1)
+        run_lay.addWidget(btn_out, 1, 2)
+
         self._btn_clf_run = QtWidgets.QPushButton("▶  Lancer la classification")
         self._btn_clf_run.setStyleSheet(_BTN_SUCCESS)
-        self._btn_clf_run.setFixedHeight(34)
+        self._btn_clf_run.setFixedHeight(38)
         self._btn_clf_run.clicked.connect(self._run_classification)
-        lay.addWidget(self._btn_clf_run)
+        run_lay.addWidget(self._btn_clf_run, 2, 0, 1, 3)
+
         self._clf_prog = QtWidgets.QProgressBar()
         self._clf_prog.setMaximumHeight(5)
         self._clf_prog.setTextVisible(False)
         self._clf_prog.hide()
-        lay.addWidget(self._clf_prog)
-        lay.addStretch()
-        return w
+        run_lay.addWidget(self._clf_prog, 3, 0, 1, 3)
+        lay.addWidget(run_grp)
 
-    def _clf_valid(self):
-        w   = QtWidgets.QWidget()
-        lay = QtWidgets.QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
-        row1 = QtWidgets.QHBoxLayout()
-        row1.addWidget(_lbl("Raster classifié :"))
+        # ── ④ Validation optionnelle ────────────────────────────────────
+        val_grp = _group("④ Validation — Matrice de confusion (optionnel)")
+        val_lay = QtWidgets.QGridLayout(val_grp)
+        val_lay.setSpacing(6)
+
+        val_lay.addWidget(_lbl("Couche classifiée (raster) :"), 0, 0)
         self._val_clf_layer = QgsMapLayerComboBox()
         self._val_clf_layer.setFilters(QgsMapLayerProxyModel.RasterLayer)
-        row1.addWidget(self._val_clf_layer)
-        lay.addLayout(row1)
-        row2 = QtWidgets.QHBoxLayout()
-        row2.addWidget(_lbl("Référence (polygones) :"))
+        val_lay.addWidget(self._val_clf_layer, 0, 1)
+
+        val_lay.addWidget(_lbl("Vérité terrain (vecteur) :"), 1, 0)
         self._val_ref_layer = QgsMapLayerComboBox()
         self._val_ref_layer.setFilters(QgsMapLayerProxyModel.VectorLayer)
-        self._val_ref_layer.setAllowEmptyLayer(True)
-        row2.addWidget(self._val_ref_layer)
-        lay.addLayout(row2)
-        row3 = QtWidgets.QHBoxLayout()
-        row3.addWidget(_lbl("Champ classe :"))
+        val_lay.addWidget(self._val_ref_layer, 1, 1)
+
+        val_lay.addWidget(_lbl("Champ nom de classe :"), 2, 0)
         self._val_field = QtWidgets.QLineEdit()
-        self._val_field.setPlaceholderText("nom du champ")
-        row3.addWidget(self._val_field)
-        lay.addLayout(row3)
+        self._val_field.setPlaceholderText("ex: classe, type, nom…")
+        val_lay.addWidget(self._val_field, 2, 1)
+
         self._btn_conf_mat = QtWidgets.QPushButton("Calculer la matrice de confusion")
         self._btn_conf_mat.setStyleSheet(_BTN_PRIMARY)
         self._btn_conf_mat.clicked.connect(self._compute_confusion_matrix)
-        lay.addWidget(self._btn_conf_mat)
-        self._conf_matrix_text = QtWidgets.QTextEdit()
+        val_lay.addWidget(self._btn_conf_mat, 3, 0, 1, 2)
+
+        self._conf_matrix_text = QtWidgets.QPlainTextEdit()
         self._conf_matrix_text.setReadOnly(True)
         self._conf_matrix_text.setFont(QtGui.QFont("Courier New", 10))
+        self._conf_matrix_text.setMaximumHeight(140)
         self._conf_matrix_text.setStyleSheet(
-            f"QTextEdit{{background:{_C_BG};color:{_C_TEXT};"
-            f"border:1px solid {_C_BORDER};border-radius:5px;"
-            f"font-family:monospace;font-size:11px;}}"
+            f"background:#0d1117; color:#fff; border:1px solid {_C_BORDER};"
         )
-        lay.addWidget(self._conf_matrix_text)
+        val_lay.addWidget(self._conf_matrix_text, 4, 0, 1, 2)
+        lay.addWidget(val_grp)
+
         lay.addStretch()
-        return w
+        scroll.setWidget(w)
+        o_lay.addWidget(scroll)
+        return outer
 
     def _trait_statistiques(self):
         w   = QtWidgets.QWidget()
@@ -1757,6 +1778,7 @@ class ImgSatDialog(QtWidgets.QDialog):
         user = self._cop_user.text().strip()
         pwd  = self._cop_pass.text().strip()
         if not user or not pwd:
+            self._loaders["cop_auth"].flash()
             self._msg("Entrez vos identifiants Copernicus.", error=True)
             return
         self._loaders["cop_auth"].start()
@@ -1793,17 +1815,12 @@ class ImgSatDialog(QtWidgets.QDialog):
             self._msg("Aucune couche raster dans le projet.", error=True)
 
     def _cop_search(self):
-        """Lance la recherche Copernicus dans un thread séparé."""
         d_start = self._cop_d_start.date().toString("yyyy-MM-dd")
         d_end   = self._cop_d_end.date().toString("yyyy-MM-dd")
         cloud   = self._cop_cloud.value()
-        coll    = self._cop_coll.currentText() # "SENTINEL-2"
+        coll    = self._cop_coll.currentText()
 
-        # --- CORRECTION ICI ---
-        # Au lieu de startswith(Name), on filtre par la collection officielle
         name_f  = f"Collection/Name eq '{coll}'"
-        # ----------------------
-
         date_f  = (
             f"ContentDate/Start gt {d_start}T00:00:00.000Z and "
             f"ContentDate/Start lt {d_end}T23:59:59.999Z"
@@ -1813,14 +1830,43 @@ class ImgSatDialog(QtWidgets.QDialog):
             f"att/Name eq 'cloudCover' and "
             f"att/OData.CSC.DoubleAttribute/Value le {cloud}.00)"
         )
-        filt = f"{name_f} and {date_f} and {cloud_f}"
 
-        # N'oublie pas le .replace() qu'on a ajouté tout à l'heure pour les espaces !
-        url  = (
-            "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
-            f"$filter={filt}&$orderby=ContentDate/Start desc&$top=20"
-        ).replace(" ", "%20")
-        print(url)
+        geo_f = ""
+        bbox_txt = self._cop_bbox.text().strip()
+        if bbox_txt:
+            try:
+                xmin, ymin, xmax, ymax = [float(x) for x in bbox_txt.split(",")]
+                wkt = (
+                    f"SRID=4326;POLYGON(({xmin} {ymin},{xmax} {ymin},"
+                    f"{xmax} {ymax},{xmin} {ymax},{xmin} {ymin}))"
+                )
+                geo_f = f" and OData.CSC.Intersects(area=geography'{wkt}')"
+            except ValueError:
+                self._msg("Emprise invalide — ignorée.", error=True)
+
+        filt = f"{name_f} and {date_f} and {cloud_f}{geo_f}"
+
+        import re
+
+        def _encode_filter(f):
+            parts = re.split(r"(geography'[^']*(?:'[^']*)*')", f)
+            result = []
+            for part in parts:
+                if part.startswith("geography'"):
+                    result.append(part.replace(" ", "%20"))
+                else:
+                    encoded = part.replace(" ", "%20").replace("(", "%28") \
+                                .replace(")", "%29").replace(":", "%3A") \
+                                .replace(",", "%2C").replace("=", "%3D")
+                    result.append(encoded)
+            return "".join(result)
+
+        encoded_filter = _encode_filter(filt)
+        url = (
+            f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
+            f"?$filter={encoded_filter}"
+            f"&$orderby=ContentDate/Start%20desc&$top=20"
+        )
 
         self._loaders["cop_search"].start()
         self._msg("Recherche Copernicus en cours…")
@@ -1883,13 +1929,16 @@ class ImgSatDialog(QtWidgets.QDialog):
     def _cop_download(self):
         row = self._cop_table.currentRow()
         if row < 0:
+            self._loaders["cop_dl"].flash()
             self._msg("Sélectionnez un produit dans la liste.", error=True)
             return
         if not self._copernicus_token:
+            self._loaders["cop_dl"].flash()
             self._msg("Connectez-vous d'abord via OAuth2.", error=True)
             return
         dest_dir = self._cop_dl_dir.text().strip()
         if not dest_dir:
+            self._loaders["cop_dl"].flash()
             self._msg("Spécifiez un dossier de destination.", error=True)
             return
         pid  = self._cop_table.item(row, 4).text()
@@ -1931,6 +1980,7 @@ class ImgSatDialog(QtWidgets.QDialog):
         user = self._usgs_user.text().strip()
         pwd  = self._usgs_pass.text().strip()
         if not user or not pwd:
+            self._loaders["usgs_auth"].flash()
             self._msg("Entrez vos identifiants USGS.", error=True)
             return
         self._loaders["usgs_auth"].start()
@@ -1982,6 +2032,7 @@ class ImgSatDialog(QtWidgets.QDialog):
 
     def _usgs_search(self):
         if not self._usgs_token:
+            self._loaders["usgs_search"].flash()
             self._msg("Connectez-vous d'abord à USGS.", error=True)
             return
         bbox_txt = self._usgs_bbox.text().strip()
@@ -2071,13 +2122,16 @@ class ImgSatDialog(QtWidgets.QDialog):
     def _usgs_download(self):
         row = self._usgs_table.currentRow()
         if row < 0:
+            self._loaders["usgs_dl"].flash()
             self._msg("Sélectionnez une scène.", error=True)
             return
         if not self._usgs_token:
+            self._loaders["usgs_dl"].flash()
             self._msg("Connectez-vous d'abord.", error=True)
             return
         dest_dir = self._usgs_dl_dir.text().strip()
         if not dest_dir:
+            self._loaders["usgs_dl"].flash()
             self._msg("Spécifiez un dossier.", error=True)
             return
         eid     = self._usgs_table.item(row, 3).text()
@@ -2349,12 +2403,15 @@ class ImgSatDialog(QtWidgets.QDialog):
         formula = self._formula_edit.text().strip()
         out     = self._idx_out.text().strip()
         if not lyr:
+            self._loaders["calc"].flash()
             self._msg("Aucune couche source.", error=True)
             return
         if not formula:
+            self._loaders["calc"].flash()
             self._msg("La formule est vide.", error=True)
             return
         if not out:
+            self._loaders["calc"].flash()
             self._msg("Spécifiez un fichier de sortie.", error=True)
             return
         self._loaders["calc"].start()
@@ -2386,16 +2443,18 @@ class ImgSatDialog(QtWidgets.QDialog):
             self._msg(f"Erreur calcul (code {code}). Vérifiez la formule.", error=True)
 
     def _apply_ndvi_colormap(self, lyr):
-        shader = QgsColorRampShader()
-        shader.setColorRampType(QgsColorRampShader.Interpolated)
-        shader.setColorRampItemList([
+        color_ramp = QgsColorRampShader()
+        color_ramp.setColorRampType(QgsColorRampShader.Interpolated)
+        color_ramp.setColorRampItemList([
             QgsColorRampShader.ColorRampItem(-1.0, QtGui.QColor(100, 100, 100), "-1"),
             QgsColorRampShader.ColorRampItem( 0.0, QtGui.QColor(210, 180, 140), "0"),
             QgsColorRampShader.ColorRampItem( 0.2, QtGui.QColor(255, 255,   0), "0.2"),
             QgsColorRampShader.ColorRampItem( 0.5, QtGui.QColor( 34, 139,  34), "0.5"),
             QgsColorRampShader.ColorRampItem( 1.0, QtGui.QColor(  0,  80,   0), "1"),
         ])
-        renderer = QgsSingleBandPseudoColorRenderer(lyr.dataProvider(), 1, shader)
+        raster_shader = QgsRasterShader()
+        raster_shader.setRasterShaderFunction(color_ramp)
+        renderer = QgsSingleBandPseudoColorRenderer(lyr.dataProvider(), 1, raster_shader)
         lyr.setRenderer(renderer)
 
     # ═════════════════════════════════════════════════════════════════════
@@ -2404,14 +2463,17 @@ class ImgSatDialog(QtWidgets.QDialog):
 
     def _apply_dos1(self):
         lyr = self._pre_layer.currentLayer()
+        out = self._dos1_out.text().strip()
         if not lyr:
+            self._loaders["dos1"].flash()
             self._msg("Aucune couche source.", error=True)
             return
         if not HAS_RASTER_CALC:
+            self._loaders["dos1"].flash()
             self._msg("QgsRasterCalculator requis.", error=True)
             return
-        out = self._dos1_out.text().strip()
         if not out:
+            self._loaders["dos1"].flash()
             self._msg("Spécifiez un fichier de sortie.", error=True)
             return
         self._loaders["dos1"].start()
@@ -2434,6 +2496,8 @@ class ImgSatDialog(QtWidgets.QDialog):
                 if r.isValid():
                     QgsProject.instance().addMapLayer(r)
                     self._msg(f"DOS1 appliqué → « {r.name()} ».")
+                else:
+                    self._msg("DOS1 calculé mais la couche résultante est invalide.", error=True)
             else:
                 self._msg("Erreur DOS1.", error=True)
         except Exception as e:
@@ -2446,9 +2510,11 @@ class ImgSatDialog(QtWidgets.QDialog):
         clip = self._clip_layer.currentLayer()
         out  = self._clip_out.text().strip()
         if not lyr or not clip or not out:
+            self._loaders["clip"].flash()
             self._msg("Couche source, clip et sortie requis.", error=True)
             return
         if not HAS_PROCESSING:
+            self._loaders["clip"].flash()
             self._msg("Module 'processing' requis.", error=True)
             return
         self._loaders["clip"].start()
@@ -2462,6 +2528,8 @@ class ImgSatDialog(QtWidgets.QDialog):
             if r.isValid():
                 QgsProject.instance().addMapLayer(r)
                 self._msg(f"Découpe terminée → « {r.name()} ».")
+            else:
+                self._msg("Découpe effectuée mais la couche résultante est invalide.", error=True)
         except Exception as e:
             self._msg(str(e), error=True)
         finally:
@@ -2472,22 +2540,30 @@ class ImgSatDialog(QtWidgets.QDialog):
         crs_txt = self._reproj_crs.text().strip()
         out     = self._reproj_out.text().strip()
         if not lyr or not crs_txt or not out:
+            self._loaders["reproj"].flash()
             self._msg("Couche, CRS et sortie requis.", error=True)
             return
         if not HAS_PROCESSING:
+            self._loaders["reproj"].flash()
             self._msg("Module 'processing' requis.", error=True)
             return
         self._loaders["reproj"].start()
         try:
+            target_crs = QgsCoordinateReferenceSystem(crs_txt)
+            if not target_crs.isValid():
+                self._msg(f"CRS invalide : « {crs_txt} ».", error=True)
+                return
             processing.run("gdal:warpreproject", {
                 "INPUT": lyr, "SOURCE_CRS": lyr.crs(),
-                "TARGET_CRS": QgsCoordinateReferenceSystem(crs_txt),
+                "TARGET_CRS": target_crs,
                 "RESAMPLING": 0, "NODATA": None, "TARGET_RESOLUTION": None, "OUTPUT": out
             })
             r = QgsRasterLayer(out, f"Reproj_{lyr.name()}")
             if r.isValid():
                 QgsProject.instance().addMapLayer(r)
                 self._msg(f"Reprojection vers {crs_txt} terminée.")
+            else:
+                self._msg("Reprojection effectuée mais la couche résultante est invalide.", error=True)
         except Exception as e:
             self._msg(str(e), error=True)
         finally:
@@ -2497,78 +2573,124 @@ class ImgSatDialog(QtWidgets.QDialog):
     # LOGIQUE — Classification
     # ═════════════════════════════════════════════════════════════════════
 
-    def _pick_color(self):
-        c = QtWidgets.QColorDialog.getColor(self._class_color_btn._color, self, "Couleur de la classe")
-        if c.isValid():
-            self._class_color_btn._color = c
-            self._class_color_btn.setStyleSheet(f"background:{c.name()};border:none;border-radius:4px;")
-
     def _add_class(self):
         name = self._class_name.text().strip()
+        lyr  = self._clf_layer.currentLayer()
+        roi  = self._clf_roi.currentLayer()
+        print(f"DEBUG: name='{name}' | raster={lyr} | roi={roi}")
+
+
         if not name:
-            self._msg("Entrez un nom.", error=True)
+            self._loaders["clf_add"].flash()
+            self._msg("Entrez un nom de classe.", error=True)
             return
-        lyr = self._clf_layer.currentLayer()
-        roi = self._roi_layer.currentLayer()
         if not lyr or not isinstance(lyr, QgsRasterLayer):
+            self._loaders["clf_add"].flash()
             self._msg("Sélectionnez une couche raster.", error=True)
             return
         if not roi or not isinstance(roi, QgsVectorLayer):
-            self._msg("Sélectionnez une couche ROI.", error=True)
+            self._loaders["clf_add"].flash()
+            self._msg("Sélectionnez une couche ROI (vecteur).", error=True)
             return
+
         self._loaders["clf_add"].start()
         try:
             sigs = self._extract_signatures(lyr, roi)
             if not sigs:
-                self._msg("Aucun pixel extrait.", error=True)
+                self._msg("Aucun pixel extrait. Vérifiez que la couche ROI superpose le raster.", error=True)
                 return
-            cid = len(self._roi_signatures) + 1
+
+            cid   = len(self._roi_signatures) + 1
+            color = self._class_color_btn.color()
+
             self._roi_signatures[cid] = {
-                "name": name, "color": self._class_color_btn._color, "signatures": sigs,
+                "name": name, "color": color, "signatures": sigs,
             }
+
             item = QtWidgets.QListWidgetItem(f"  {cid}. {name}  ({len(sigs)} px)")
             px   = QtGui.QPixmap(12, 12)
-            px.fill(self._class_color_btn._color)
+            px.fill(color)
             item.setIcon(QtGui.QIcon(px))
             self._class_list.addItem(item)
-            self._msg(f"Classe « {name} » ajoutée ({len(sigs)} px).")
+
+            self._msg(f"✓ Classe « {name} » ajoutée ({len(sigs)} px).")
             self._class_name.clear()
+        except Exception as e:
+            self._msg(f"Erreur : {str(e)}", error=True)
         finally:
             self._loaders["clf_add"].stop()
 
     def _extract_signatures(self, raster_lyr, vector_lyr):
+        from qgis.core import QgsCoordinateTransform, QgsProject
+
         provider = raster_lyr.dataProvider()
         n_bands  = raster_lyr.bandCount()
         ext      = raster_lyr.extent()
         w, h     = raster_lyr.width(), raster_lyr.height()
         px_w     = ext.width()  / w
         px_h     = ext.height() / h
-        sigs     = []
+
+        # Reprojection automatique si CRS différents
+        need_transform = raster_lyr.crs() != vector_lyr.crs()
+        transform = None
+        if need_transform:
+            transform = QgsCoordinateTransform(
+                vector_lyr.crs(),
+                raster_lyr.crs(),
+                QgsProject.instance()
+            )
+
+        # Charge toutes les bandes en mémoire une seule fois
+        band_blocks = []
+        for b in range(1, n_bands + 1):
+            band_blocks.append(provider.block(b, ext, w, h))
+
+        sigs = []
         for feat in vector_lyr.getFeatures():
             geom = feat.geometry()
-            if geom is None or geom.isEmpty(): continue
+            if geom is None or geom.isEmpty():
+                continue
+
+            # Reprojette la géométrie dans le CRS du raster
+            if need_transform and transform:
+                geom = QgsGeometry(geom)
+                try:
+                    geom.transform(transform)
+                except Exception:
+                    continue
+
             fb = geom.boundingBox()
+
+            # Ignore si hors emprise raster
+            if not ext.intersects(fb):
+                continue
+
             c0 = max(0, int((fb.xMinimum() - ext.xMinimum()) / px_w))
-            c1 = min(w-1, int((fb.xMaximum() - ext.xMinimum()) / px_w))
+            c1 = min(w - 1, int((fb.xMaximum() - ext.xMinimum()) / px_w))
             r0 = max(0, int((ext.yMaximum() - fb.yMaximum()) / px_h))
-            r1 = min(h-1, int((ext.yMaximum() - fb.yMinimum()) / px_h))
-            for row in range(r0, r1+1):
-                for col in range(c0, c1+1):
-                    x   = ext.xMinimum() + (col+0.5) * px_w
-                    y   = ext.yMaximum() - (row+0.5) * px_h
-                    pt  = QgsPointXY(x, y)
-                    if not geom.contains(QgsGeometry.fromPointXY(pt)): continue
-                    ident = provider.identify(pt, QgsRaster.IdentifyFormatValue)
-                    if not ident.isValid(): continue
-                    results = ident.results()
-                    vals, ok = [], True
-                    for b in range(1, n_bands+1):
-                        if b in results and results[b] is not None:
-                            vals.append(float(results[b]))
-                        else:
-                            ok = False; break
-                    if ok and vals:
+            r1 = min(h - 1, int((ext.yMaximum() - fb.yMinimum()) / px_h))
+
+            for row in range(r0, r1 + 1):
+                for col in range(c0, c1 + 1):
+                    x  = ext.xMinimum() + (col + 0.5) * px_w
+                    y  = ext.yMaximum() - (row + 0.5) * px_h
+                    pt = QgsPointXY(x, y)
+
+                    if not geom.contains(QgsGeometry.fromPointXY(pt)):
+                        continue
+
+                    vals  = []
+                    valid = True
+                    for b in range(n_bands):
+                        v = band_blocks[b].value(row, col)
+                        if band_blocks[b].isNoData(row, col):
+                            valid = False
+                            break
+                        vals.append(float(v))
+
+                    if valid and vals:
                         sigs.append(tuple(vals))
+
         return sigs
 
     def _clear_classes(self):
@@ -2577,23 +2699,29 @@ class ImgSatDialog(QtWidgets.QDialog):
         self._msg("Classes effacées.")
 
     def _run_classification(self):
-        if not self._roi_signatures:
-            self._msg("Définissez au moins une classe.", error=True)
-            return
         lyr = self._clf_layer.currentLayer()
-        if not lyr:
-            self._msg("Aucune couche source.", error=True)
-            return
         out = self._clf_out.text().strip()
+        if not self._roi_signatures:
+            self._loaders["clf_run"].flash()
+            self._msg("Définissez au moins une classe avant de lancer.", error=True)
+            return
+        if not lyr:
+            self._loaders["clf_run"].flash()
+            self._msg("Aucune couche raster sélectionnée.", error=True)
+            return
         if not out:
+            self._loaders["clf_run"].flash()
             self._msg("Spécifiez un fichier de sortie.", error=True)
             return
+
+        # ── Loader démarre ici — bloquera le bouton pendant tout le calcul ──
         self._loaders["clf_run"].start()
         self._clf_prog.setMaximum(lyr.height())
         self._clf_prog.setValue(0)
         self._clf_prog.show()
         self._msg("Classification en cours…")
         QtWidgets.QApplication.processEvents()
+
         try:
             centroids = {
                 cid: tuple(
@@ -2636,76 +2764,152 @@ class ImgSatDialog(QtWidgets.QDialog):
                 if row % 20 == 0:
                     self._clf_prog.setValue(row)
                     QtWidgets.QApplication.processEvents()
+
             self._clf_prog.hide()
             self._write_clf_result(lyr, grid, out)
+            self._msg("✓ Classification terminée et ajoutée au projet QGIS.")
         except Exception as e:
             self._clf_prog.hide()
             self._msg(str(e), error=True)
         finally:
+            # ── Loader s'arrête toujours, même en cas d'erreur ──
             self._loaders["clf_run"].stop()
 
     def _write_clf_result(self, src_lyr, grid, out_path):
-        pipe = QgsRasterPipe()
-        if not pipe.set(src_lyr.dataProvider().clone()):
-            self._msg("Impossible d'initialiser le pipeline.", error=True)
+        """
+        Écrit le grid de classification dans un GeoTIFF via gdal (subprocess),
+        puis applique une palette de couleurs et ajoute la couche au projet.
+        """
+        try:
+            from osgeo import gdal, osr
+        except ImportError:
+            self._msg("GDAL Python (osgeo) requis pour écrire le résultat.", error=True)
             return
-        writer = QgsRasterFileWriter(out_path)
-        writer.setOutputProviderKey("gdal")
-        writer.setOutputFormat("GTiff")
-        writer.writeRaster(pipe, src_lyr.width(), src_lyr.height(), src_lyr.extent(), src_lyr.crs())
+
+        h        = src_lyr.height()
+        w        = src_lyr.width()
+        ext      = src_lyr.extent()
+        crs_wkt  = src_lyr.crs().toWkt()
+
+        driver   = gdal.GetDriverByName("GTiff")
+        ds       = driver.Create(out_path, w, h, 1, gdal.GDT_Byte)
+        if ds is None:
+            self._msg(f"Impossible de créer le fichier : {out_path}", error=True)
+            return
+
+        # Géoréférencement
+        ds.SetGeoTransform([
+            ext.xMinimum(), ext.width() / w, 0,
+            ext.yMaximum(), 0, -(ext.height() / h)
+        ])
+        srs = osr.SpatialReference()
+        srs.ImportFromWkt(crs_wkt)
+        ds.SetProjection(srs.ExportToWkt())
+
+        # Écriture ligne par ligne
+        import array
+        band_out = ds.GetRasterBand(1)
+        for row in range(h):
+            line = array.array('B', [grid[row][col] for col in range(w)])
+            band_out.WriteArray(__import__('numpy').array(line).reshape(1, w), 0, row)
+
+        band_out.SetNoDataValue(0)
+        band_out.FlushCache()
+        ds = None  # ferme le fichier
+
+        # Charge et stylise la couche
         lyr = QgsRasterLayer(out_path, f"Classif_{len(self._roi_signatures)}cl")
-        if not lyr.isValid(): return
-        shader = QgsColorRampShader()
-        shader.setColorRampType(QgsColorRampShader.Exact)
-        shader.setColorRampItemList([
+        if not lyr.isValid():
+            self._msg("Le raster de classification généré est invalide.", error=True)
+            return
+
+        color_ramp = QgsColorRampShader()
+        color_ramp.setColorRampType(QgsColorRampShader.Exact)
+        color_ramp.setColorRampItemList([
             QgsColorRampShader.ColorRampItem(cid, info["color"], info["name"])
             for cid, info in self._roi_signatures.items()
         ])
-        renderer = QgsSingleBandPseudoColorRenderer(lyr.dataProvider(), 1, shader)
+        raster_shader = QgsRasterShader()
+        raster_shader.setRasterShaderFunction(color_ramp)
+        renderer = QgsSingleBandPseudoColorRenderer(lyr.dataProvider(), 1, raster_shader)
         lyr.setRenderer(renderer)
         QgsProject.instance().addMapLayer(lyr)
-        self._msg(f"Classification terminée → {len(self._roi_signatures)} classes.")
 
     def _compute_confusion_matrix(self):
-        clf_lyr  = self._val_clf_layer.currentLayer()
-        ref_lyr  = self._val_ref_layer.currentLayer()
-        field    = self._val_field.text().strip()
-        if not clf_lyr or not ref_lyr or not field:
-            self._msg("Couche classifiée, référence et champ requis.", error=True)
+        clf_lyr = self._val_clf_layer.currentLayer()
+        ref_lyr = self._val_ref_layer.currentLayer()
+        field   = self._val_field.text().strip()
+
+        if not clf_lyr:
+            self._loaders["clf_matrix"].flash()
+            self._msg("Sélectionnez la couche classifiée (raster).", error=True)
             return
+        if not ref_lyr:
+            self._loaders["clf_matrix"].flash()
+            self._msg("Sélectionnez la couche de vérité terrain (vecteur).", error=True)
+            return
+        if not field:
+            self._loaders["clf_matrix"].flash()
+            self._msg("Indiquez le nom du champ contenant le nom de classe.", error=True)
+            return
+        if not self._roi_signatures:
+            self._loaders["clf_matrix"].flash()
+            self._msg("Aucune classe définie. Ajoutez des classes d'entraînement.", error=True)
+            return
+
         classes = sorted(self._roi_signatures.keys())
-        n       = len(classes)
-        if n == 0:
-            self._msg("Aucune classe définie.", error=True)
-            return
         self._loaders["clf_matrix"].start()
         try:
+            if field not in ref_lyr.fields().names():
+                self._msg(
+                    f"Le champ « {field} » n'existe pas. "
+                    f"Champs disponibles : {', '.join(ref_lyr.fields().names())}",
+                    error=True
+                )
+                return
+
             matrix   = {ci: {cj: 0 for cj in classes} for ci in classes}
             total    = 0
             provider = clf_lyr.dataProvider()
+
             for feat in ref_lyr.getFeatures():
-                ref_cls = str(feat[field]) if field in feat.fields().names() else ""
+                ref_cls = str(feat[field])
                 ref_id  = next(
                     (cid for cid, info in self._roi_signatures.items()
                      if info["name"].lower() == ref_cls.lower()), None
                 )
-                if ref_id is None: continue
+                if ref_id is None:
+                    continue
                 geom = feat.geometry()
-                fb   = geom.boundingBox()
-                cx   = (fb.xMinimum() + fb.xMaximum()) / 2
-                cy   = (fb.yMinimum() + fb.yMaximum()) / 2
+                if geom is None or geom.isEmpty():
+                    continue
+                fb = geom.boundingBox()
+                cx = (fb.xMinimum() + fb.xMaximum()) / 2
+                cy = (fb.yMinimum() + fb.yMaximum()) / 2
                 ident = provider.identify(QgsPointXY(cx, cy), QgsRaster.IdentifyFormatValue)
-                if not ident.isValid(): continue
-                pred_id = int(ident.results().get(1, 0))
+                if not ident.isValid():
+                    continue
+                results = ident.results()
+                if 1 not in results or results[1] is None:
+                    continue
+                pred_id = int(results[1])
                 if pred_id in matrix.get(ref_id, {}):
                     matrix[ref_id][pred_id] += 1
                     total += 1
+
             if total == 0:
-                self._conf_matrix_text.setPlainText("Aucun pixel apparié. Vérifiez le champ.")
+                self._conf_matrix_text.setPlainText(
+                    "Aucun pixel apparié.\n\n"
+                    "Vérifiez que :\n"
+                    f"  • le champ « {field} » contient des noms identiques à ceux saisis\n"
+                    "  • la couche de référence superpose la couche classifiée"
+                )
+                self._msg("Aucun pixel apparié — voir le détail ci-dessous.", error=True)
                 return
+
             names  = [self._roi_signatures[cid]["name"][:8] for cid in classes]
-            col_w  = max(max(len(n) for n in names), 5) + 2
-            header = " " * col_w + "".join(f"{n:>{col_w}}" for n in names)
+            col_w  = max(max(len(nm) for nm in names), 5) + 2
+            header = " " * col_w + "".join(f"{nm:>{col_w}}" for nm in names)
             lines  = [header, "─" * len(header)]
             correct = 0
             for ci in classes:
@@ -2718,7 +2922,9 @@ class ImgSatDialog(QtWidgets.QDialog):
             acc = correct / total * 100
             lines += ["", f"Précision globale : {acc:.1f}%  ({correct}/{total} px)"]
             self._conf_matrix_text.setPlainText("\n".join(lines))
-            self._msg(f"Matrice calculée — précision {acc:.1f}%.")
+            self._msg(f"✓ Matrice calculée — précision globale : {acc:.1f}%.")
+        except Exception as e:
+            self._msg(str(e), error=True)
         finally:
             self._loaders["clf_matrix"].stop()
 
@@ -2729,6 +2935,7 @@ class ImgSatDialog(QtWidgets.QDialog):
     def _compute_stats(self):
         lyr = self._stat_layer.currentLayer()
         if not lyr:
+            self._loaders["stats"].flash()
             self._msg("Aucune couche.", error=True)
             return
         n = lyr.bandCount()
@@ -2794,9 +3001,11 @@ class ImgSatDialog(QtWidgets.QDialog):
         lyr = self._exp_r_layer.currentLayer()
         out = self._exp_r_out.text().strip()
         if not lyr or not out:
+            self._loaders["exp_raster"].flash()
             self._msg("Couche et sortie requis.", error=True)
             return
         if not HAS_PROCESSING:
+            self._loaders["exp_raster"].flash()
             self._msg("Module 'processing' requis.", error=True)
             return
         self._loaders["exp_raster"].start()
@@ -2816,6 +3025,7 @@ class ImgSatDialog(QtWidgets.QDialog):
         lyr = self._exp_csv_layer.currentLayer()
         out = self._exp_csv_out.text().strip()
         if not lyr or not out:
+            self._loaders["exp_csv"].flash()
             self._msg("Couche et sortie requis.", error=True)
             return
         self._loaders["exp_csv"].start()
@@ -2842,6 +3052,7 @@ class ImgSatDialog(QtWidgets.QDialog):
     def _export_map_png(self):
         out = self._map_out.text().strip()
         if not out:
+            self._loaders["exp_map"].flash()
             self._msg("Spécifiez un fichier PNG.", error=True)
             return
         self._loaders["exp_map"].start()
@@ -2870,6 +3081,7 @@ class ImgSatDialog(QtWidgets.QDialog):
     def _generate_report(self):
         out = self._report_out.text().strip()
         if not out:
+            self._loaders["report"].flash()
             self._msg("Spécifiez un fichier.", error=True)
             return
         self._loaders["report"].start()
